@@ -9,8 +9,15 @@ function isSendShortcut(event: KeyboardEvent<HTMLTextAreaElement>) {
   return event.key === "Enter" && !event.shiftKey && !composing;
 }
 
+// 打开页面时小明的第一句问候，作为开场白主动展示。
+const greeting: ChatMessage = {
+  role: "assistant",
+  content:
+    "你好，我是小明。你可以直接跟我说「帮我记一下买牛奶」来记任务，或问「我有哪些任务？」来查看清单。",
+};
+
 export default function App() {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>([greeting]);
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
