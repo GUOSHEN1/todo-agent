@@ -396,7 +396,8 @@ function formatTask(task: {
   due?: string;
 }): string {
   const parts: string[] = [task.title];
-  if (task.priority) parts.push(`[${task.priority}优先]`);
+  // 用「〔高〕」这类标记包裹优先级，前端据此把整条任务渲染成对应颜色加粗。
+  if (task.priority) parts.push(`〔${task.priority}〕`);
   if (task.effort) parts.push(`[${task.effort}工作量]`);
   if (task.due) parts.push(`📅${task.due}`);
   return parts.join(" ");
@@ -440,6 +441,11 @@ export async function reply(messages: ChatMessage[]): Promise<string> {
       // 边界：标题超长时友好提示，而不是静默截断或存入超长数据。
       if (title.length > 200) {
         return "这条任务太长了（超过 200 字），能说简短一点吗？";
+      }
+      // 去重：若已存在同名的待办任务，就不再重复记，避免清单里出现两条一样的事。
+      const existing = tasks.list().find((task) => task.title === title && !task.done);
+      if (existing) {
+        return `「${title}」已经记过了哦，不用重复提醒。`;
       }
       const created = tasks.create(title);
       if (intent.priority) tasks.update(created.id, { priority: intent.priority });

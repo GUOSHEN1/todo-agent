@@ -146,3 +146,12 @@ test("边界：标记已完成的任务提示重复", async (t) => {
   history = await say("牛奶买好了", history);
   assert.ok(history.at(-1)!.content.includes("已经完成"));
 });
+
+test("边界：重复记同名待办任务只提醒不新增", async (t) => {
+  const { store, say } = await makeAgent(t);
+  let history: ChatMessage[] = [];
+  history = await say("帮我记一下买牛奶", history);
+  history = await say("帮我记一下买牛奶", history);
+  assert.equal(store.list().length, 1);
+  assert.ok(history.at(-1)!.content.includes("已经记过"));
+});

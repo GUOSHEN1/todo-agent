@@ -126,7 +126,7 @@ h1 {
   font-size: 12px;
   color: #637086;
 }
-.message div {
+.message .content {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   padding: 13px 17px;
@@ -136,6 +136,23 @@ h1 {
   border: 1px solid #e0e4ed;
   border-radius: 4px 16px 16px;
 }
+.message .content > span {
+  display: block;
+}
+.prio-high {
+  color: #c0261f;
+  font-weight: 600;
+}
+.prio-mid {
+  color: #b7791f;
+  font-weight: 500;
+}
+.prio-low {
+  color: #4a7a2c;
+}
+.prio-tag {
+  font-weight: 700;
+}
 .user {
   justify-self: end;
 }
@@ -143,7 +160,7 @@ h1 {
   display: block;
   text-align: right;
 }
-.user div {
+.user .content {
   background: #eaf0ff;
   border-color: #dce5ff;
   border-radius: 16px 4px 16px 16px;
