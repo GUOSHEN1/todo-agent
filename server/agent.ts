@@ -11,6 +11,9 @@ export function setTaskStore(store: TaskStore) {
   tasks = store;
 }
 
+// 记录「用户刚请求清空、等待确认」的状态，用于二次确认防止误删。
+let pendingClear = false;
+
 // 意图类型：把用户消息归类为一种操作，并携带解析出的参数。
 type Intent =
   | { kind: "create"; title: string; priority?: Priority; effort?: Effort; due?: string }
@@ -21,6 +24,7 @@ type Intent =
   | { kind: "set-priority"; query: string; priority: Priority }
   | { kind: "set-effort"; query: string; effort: Effort }
   | { kind: "set-due"; query: string; due: string }
+  | { kind: "clear" }
   | { kind: "unknown" };
 
 // ---------------------------------------------------------------------------
@@ -30,6 +34,7 @@ type Intent =
 const completeMarkers = ["好了", "完成", "搞定", "做完", "办完", "买好", "买到", "取到", "处理完"];
 const uncompleteMarkers = ["还没", "取消完成", "标记为未完成", "恢复为待办"];
 const deleteMarkers = ["删掉", "删除", "移除", "去掉", "取消这条", "不要了"];
+const clearMarkers = ["清空任务", "清空清单", "清空列表", "清空待办", "全部删掉", "删掉所有", "删除所有", "全部清除", "清除所有", "清空"];
 const listMarkers = [
   "有哪些",
   "看看",
@@ -244,6 +249,11 @@ function parseIntent(text: string): Intent {
     if (dueQuery) return { kind: "set-due", query: dueQuery, due };
   }
 
+  // 清空全部任务（优先于单条删除判断，避免「全部删掉」被当成删除单条）
+  if (clearMarkers.some((m) => t.includes(m))) {
+    return { kind: "clear" };
+  }
+
   // 删除
   if (deleteMarkers.some((m) => t.includes(m))) {
     const query = cleanQuery(t.replace(/(删掉|删除|移除|去掉|取消这条|不要了)/g, ""));
@@ -425,13 +435,29 @@ export async function reply(messages: ChatMessage[]): Promise<string> {
     return "你好，我是小明。你可以直接跟我说「帮我记一下买牛奶」来记任务，或问「我有哪些任务？」来查看清单。";
   }
 
-  // 优先用大模型解析，失败回退本地规则
+  // 二次确认：上一轮用户请求了「清空任务」，这一轮判断他是否确认。
+  if (pendingClear) {
+    pendingClear = false;
+    if (/^(确定|确认|是的|好|嗯|清空吧|删吧|yes|ok|OK)$/.test(text.trim())) {
+      tasks.clear();
+      return "好的，已经清空全部任务，现在清单是空的。";
+    }
+    // 用户改主意或说了别的，取消清空。
+    return "好的，那我先不清空了。你可以继续跟我说要记什么任务。";
+  }
+
+  // 优先用大模型解析，失败回退本地规则。
+  // 但「清空任务」这类危险指令必须走确定性本地规则，避免模型误判成新建任务。
   let intent: Intent;
-  const llm = await parseIntentWithLlm(text);
-  if (llm) {
-    intent = llmToIntent(llm, text);
+  if (clearMarkers.some((m) => text.includes(m))) {
+    intent = { kind: "clear" };
   } else {
-    intent = parseIntent(text);
+    const llm = await parseIntentWithLlm(text);
+    if (llm) {
+      intent = llmToIntent(llm, text);
+    } else {
+      intent = parseIntent(text);
+    }
   }
 
   switch (intent.kind) {
@@ -457,6 +483,16 @@ export async function reply(messages: ChatMessage[]): Promise<string> {
 
     case "list":
       return renderList(intent.filter);
+
+    case "clear": {
+      const count = tasks.list().length;
+      if (count === 0) {
+        pendingClear = false;
+        return "你的清单本来就是空的，没有什么需要清空。";
+      }
+      pendingClear = true;
+      return `你当前有 ${count} 条任务，确定要全部清空吗？回复「确定」我就清空，回复别的就取消。`;
+    }
 
     case "complete": {
       const target = findTask(intent.query);

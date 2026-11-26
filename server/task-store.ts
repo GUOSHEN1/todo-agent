@@ -36,6 +36,7 @@ export interface TaskStore {
   create(title: string): Task;
   update(id: string, changes: TaskChanges): Task | undefined;
   remove(id: string): boolean;
+  clear(): void;
 }
 
 export function createJsonTaskStore(filename: string): TaskStore {
@@ -78,6 +79,10 @@ export function createJsonTaskStore(filename: string): TaskStore {
 
       save(remaining);
       return true;
+    },
+
+    clear() {
+      save([]);
     },
   };
 }

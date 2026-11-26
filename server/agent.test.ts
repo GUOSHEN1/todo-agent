@@ -155,3 +155,31 @@ test("边界：重复记同名待办任务只提醒不新增", async (t) => {
   assert.equal(store.list().length, 1);
   assert.ok(history.at(-1)!.content.includes("已经记过"));
 });
+
+test("清空任务：需要二次确认后才真正清空", async (t) => {
+  const { store, say } = await makeAgent(t);
+  let history: ChatMessage[] = [];
+  history = await say("帮我记一下买牛奶", history);
+  history = await say("帮我记一下取快递", history);
+  assert.equal(store.list().length, 2);
+
+  // 第一次说清空，只反问，不真的清空
+  history = await say("清空任务", history);
+  assert.equal(store.list().length, 2);
+  assert.ok(history.at(-1)!.content.includes("确定"));
+
+  // 回复「确定」后才真正清空
+  history = await say("确定", history);
+  assert.equal(store.list().length, 0);
+  assert.ok(history.at(-1)!.content.includes("清空"));
+});
+
+test("清空任务：改主意不清空", async (t) => {
+  const { store, say } = await makeAgent(t);
+  let history: ChatMessage[] = [];
+  history = await say("帮我记一下买牛奶", history);
+  history = await say("清空任务", history);
+  history = await say("算了不用了", history);
+  assert.equal(store.list().length, 1);
+  assert.ok(history.at(-1)!.content.includes("不清空"));
+});
