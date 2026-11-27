@@ -301,24 +301,27 @@ interface LlmIntent {
   due?: string;
 }
 
-const SYSTEM_PROMPT = `你是「小明」待办清单助手。分析用户的中文消息，只输出一个 JSON，不要输出其他内容。
-JSON 字段：
+const SYSTEM_PROMPT = `你是「小明」待办清单助手。分析用户的中文消息，只输出一个 JSON 数组，不要输出其他内容。
+数组里的每一项是一个动作对象，字段如下：
 - action: create（新建任务）/ list（查看任务）/ complete（标记完成）/ delete（删除任务）/ set_priority（设置优先级）/ set_effort（设置工作量）/ set_due（设置到期时间）/ unknown（无法判断）
 - create 时给出 title（任务标题，去掉语气词和前缀）；可选 priority（高/中/低）、effort（大/中/小）、due（YYYY-MM-DD）
 - complete/delete/set_priority/set_effort/set_due 时给出 query（定位任务的描述词）
 - set_priority 额外给 priority，set_effort 额外给 effort，set_due 额外给 due
 
+重要规则：如果用户一句话里提到多件独立的事，必须拆成多个 create 动作，分别输出。例如「下午开会，开会前吃午饭」要拆成两个 create：「下午开会」和「吃午饭」。如果只有一件事，就输出只含一个元素的数组。
+
 示例：
-"帮我记一下买牛奶" -> {"action":"create","title":"买牛奶"}
-"我有哪些任务？" -> {"action":"list"}
-"牛奶买好了" -> {"action":"complete","query":"买牛奶"}
-"取快递这条删掉吧" -> {"action":"delete","query":"取快递"}
-"买牛奶设为高优先级" -> {"action":"set_priority","query":"买牛奶","priority":"高"}
-"取快递明天到期" -> {"action":"set_due","query":"取快递","due":"2026-11-27"}
+"帮我记一下买牛奶" -> [{"action":"create","title":"买牛奶"}]
+"下午开会，会前吃午饭" -> [{"action":"create","title":"下午开会","priority":"高"},{"action":"create","title":"吃午饭"}]
+"我有哪些任务？" -> [{"action":"list"}]
+"牛奶买好了" -> [{"action":"complete","query":"买牛奶"}]
+"取快递这条删掉吧" -> [{"action":"delete","query":"取快递"}]
+"买牛奶设为高优先级" -> [{"action":"set_priority","query":"买牛奶","priority":"高"}]
+"取快递明天到期" -> [{"action":"set_due","query":"取快递","due":"2026-11-27"}]
 
-只输出 JSON。`;
+只输出 JSON 数组。`;
 
-async function parseIntentWithLlm(text: string): Promise<LlmIntent | null> {
+async function parseIntentWithLlm(text: string): Promise<LlmIntent[] | null> {
   try {
     // 未配置 API key 时直接回退规则，避免抛错。
     if (!process.env.DEEPSEEK_API_KEY) return null;
@@ -336,13 +339,14 @@ async function parseIntentWithLlm(text: string): Promise<LlmIntent | null> {
       { timeout: 10_000, maxRetries: 1 },
     );
     const raw = completion.choices[0]?.message?.content?.trim() ?? "";
-    const json = JSON.parse(
+    const parsed = JSON.parse(
       raw
         .replace(/^```(json)?/i, "")
         .replace(/```$/, "")
         .trim(),
     );
-    return json as LlmIntent;
+    // 兼容两种情况：模型可能返回单个对象或数组，统一转成数组。
+    return Array.isArray(parsed) ? (parsed as LlmIntent[]) : [parsed as LlmIntent];
   } catch (error) {
     // 记录原因便于排查，同时静默降级，保证服务不中断。
     console.warn(
@@ -419,6 +423,30 @@ function comparePriority(a: { priority?: Priority }, b: { priority?: Priority })
   return (priorityRank[a.priority ?? "中"] ?? 1) - (priorityRank[b.priority ?? "中"] ?? 1);
 }
 
+// 创建单条任务，处理空标题、超长、去重等边界，返回给用户的文字结果。
+// 用 { status } 区分是否真正记下，便于上层汇总多条任务时的措辞。
+export function createTask(title: string, priority?: Priority, effort?: Effort, due?: string): {
+  status: "created" | "duplicate" | "too-long" | "empty";
+  title: string;
+  detail: string;
+} {
+  const t = title.trim();
+  if (!t) return { status: "empty", title: "", detail: "" };
+  if (t.length > 200) return { status: "too-long", title: t, detail: "" };
+  const existing = tasks.list().find((task) => task.title === t && !task.done);
+  if (existing) return { status: "duplicate", title: t, detail: "" };
+  const created = tasks.create(t);
+  if (priority) tasks.update(created.id, { priority });
+  if (effort) tasks.update(created.id, { effort });
+  if (due) tasks.update(created.id, { due });
+  const finalTask = tasks.list().find((task) => task.id === created.id) ?? created;
+  return {
+    status: "created",
+    title: t,
+    detail: formatTask(finalTask) !== t ? `（${formatTask(finalTask)}）` : "",
+  };
+}
+
 // ---------------------------------------------------------------------------
 // 主入口：接收对话历史，返回本轮回复。
 // ---------------------------------------------------------------------------
@@ -452,9 +480,17 @@ export async function reply(messages: ChatMessage[]): Promise<string> {
   if (clearMarkers.some((m) => text.includes(m))) {
     intent = { kind: "clear" };
   } else {
-    const llm = await parseIntentWithLlm(text);
-    if (llm) {
-      intent = llmToIntent(llm, text);
+    const llmResults = await parseIntentWithLlm(text);
+    if (llmResults) {
+      // 大模型可能拆出多个 create（一句话含多个任务），单独处理。
+      const creates = llmResults
+        .filter((l) => l.action === "create" && l.title)
+        .map((l) => llmToIntent(l, text) as Extract<Intent, { kind: "create" }>);
+      if (creates.length > 0) {
+        return handleCreates(creates);
+      }
+      // 其余情况取第一个动作。
+      intent = llmResults.length > 0 ? llmToIntent(llmResults[0], text) : parseIntent(text);
     } else {
       intent = parseIntent(text);
     }
@@ -462,23 +498,11 @@ export async function reply(messages: ChatMessage[]): Promise<string> {
 
   switch (intent.kind) {
     case "create": {
-      let title = intent.title.trim();
-      if (!title) return "你想让我记下什么任务呢？";
-      // 边界：标题超长时友好提示，而不是静默截断或存入超长数据。
-      if (title.length > 200) {
-        return "这条任务太长了（超过 200 字），能说简短一点吗？";
-      }
-      // 去重：若已存在同名的待办任务，就不再重复记，避免清单里出现两条一样的事。
-      const existing = tasks.list().find((task) => task.title === title && !task.done);
-      if (existing) {
-        return `「${title}」已经记过了哦，不用重复提醒。`;
-      }
-      const created = tasks.create(title);
-      if (intent.priority) tasks.update(created.id, { priority: intent.priority });
-      if (intent.effort) tasks.update(created.id, { effort: intent.effort });
-      if (intent.due) tasks.update(created.id, { due: intent.due });
-      const finalTask = tasks.list().find((t) => t.id === created.id) ?? created;
-      return `好的，已记下「${title}」。${formatTask(finalTask) !== title ? "（" + formatTask(finalTask) + "）" : ""}`;
+      const result = createTask(intent.title, intent.priority, intent.effort, intent.due);
+      if (result.status === "empty") return "你想让我记下什么任务呢？";
+      if (result.status === "too-long") return "这条任务太长了（超过 200 字），能说简短一点吗？";
+      if (result.status === "duplicate") return `「${result.title}」已经记过了哦，不用重复提醒。`;
+      return `好的，已记下「${result.title}」。${result.detail}`;
     }
 
     case "list":
@@ -573,4 +597,20 @@ function llmToIntent(llm: LlmIntent, fallbackText: string): Intent {
     default:
       return parseIntent(fallbackText);
   }
+}
+
+// 一句话拆出多个任务时，逐个记下并汇总回复。
+function handleCreates(creates: Array<Extract<Intent, { kind: "create" }>>): string {
+  const done: string[] = [];
+  const duplicates: string[] = [];
+  for (const c of creates) {
+    const result = createTask(c.title, c.priority, c.effort, c.due);
+    if (result.status === "created") done.push(result.title);
+    else if (result.status === "duplicate") duplicates.push(result.title);
+  }
+  const parts: string[] = [];
+  if (done.length > 0) parts.push(`好的，已记下：${done.map((t) => `「${t}」`).join("、")}。`);
+  if (duplicates.length > 0) parts.push(`其中 ${duplicates.map((t) => `「${t}」`).join("、")} 已经记过了，未重复添加。`);
+  if (parts.length === 0) return "你想让我记下什么任务呢？";
+  return parts.join(" ");
 }

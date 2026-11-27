@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import type { ChatMessage } from "../shared/chat.ts";
-import { reply, setTaskStore } from "./agent.ts";
+import { reply, setTaskStore, createTask } from "./agent.ts";
 import { createJsonTaskStore, type TaskStore } from "./task-store.ts";
 
 async function makeAgent(t: TestContext) {
@@ -182,4 +182,23 @@ test("清空任务：改主意不清空", async (t) => {
   history = await say("算了不用了", history);
   assert.equal(store.list().length, 1);
   assert.ok(history.at(-1)!.content.includes("不清空"));
+});
+
+test("一句话拆出多个任务：逐个记下并去重", async (t) => {
+  const { store } = await makeAgent(t);
+
+  // 模拟大模型拆出的两个 create 动作（开会 + 吃午饭）
+  const r1 = createTask("下午开会", "高");
+  const r2 = createTask("吃午饭");
+  assert.equal(r1.status, "created");
+  assert.equal(r2.status, "created");
+  assert.deepEqual(
+    store.list().map((x) => x.title),
+    ["下午开会", "吃午饭"],
+  );
+
+  // 再记一次「下午开会」应被去重拦截
+  const r3 = createTask("下午开会");
+  assert.equal(r3.status, "duplicate");
+  assert.equal(store.list().length, 2);
 });
