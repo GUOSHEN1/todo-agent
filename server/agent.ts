@@ -605,11 +605,11 @@ function handleCreates(creates: Array<Extract<Intent, { kind: "create" }>>): str
   const duplicates: string[] = [];
   for (const c of creates) {
     const result = createTask(c.title, c.priority, c.effort, c.due);
-    if (result.status === "created") done.push(result.title);
+    if (result.status === "created") done.push(`「${result.title}」${result.detail}`);
     else if (result.status === "duplicate") duplicates.push(result.title);
   }
   const parts: string[] = [];
-  if (done.length > 0) parts.push(`好的，已记下：${done.map((t) => `「${t}」`).join("、")}。`);
+  if (done.length > 0) parts.push(`好的，已记下：${done.join("、")}。`);
   if (duplicates.length > 0) parts.push(`其中 ${duplicates.map((t) => `「${t}」`).join("、")} 已经记过了，未重复添加。`);
   if (parts.length === 0) return "你想让我记下什么任务呢？";
   return parts.join(" ");
